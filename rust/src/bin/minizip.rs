@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 #[derive(Parser)]
 #[command(name = "minizip")]
-#[command(about = "A Rust reimplementation of minizip", long_about = None)]
+#[command(about = "A professional Rust reimplementation of minizip", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -39,6 +39,10 @@ enum Commands {
 
         /// Files to add
         files: Vec<PathBuf>,
+
+        /// Compression method: store, deflate, bzip2, zstd, xz
+        #[arg(short, long, default_value = "deflate")]
+        method: String,
 
         /// Compression level (0-9)
         #[arg(short, long, default_value_t = 6)]
@@ -74,16 +78,19 @@ fn main() {
             reader.extract_all(destination.to_str().unwrap())
                 .expect("Failed to extract files");
         }
-        Commands::Add { zip_file, files, level, password } => {
+        Commands::Add { zip_file, files, method, level, password } => {
             let mut writer = ZipWriter::create_file(zip_file.to_str().unwrap())
                 .expect("Failed to create zip file");
 
-            if level == 0 {
-                writer.compress_method = 0;
-            } else {
-                writer.compress_method = 8;
-                writer.compress_level = level;
-            }
+            writer.compress_method = match method.to_lowercase().as_str() {
+                "store" => 0,
+                "deflate" => 8,
+                "bzip2" => 12,
+                "zstd" => 93,
+                "xz" => 95,
+                _ => 8,
+            };
+            writer.compress_level = level;
             writer.password = password;
 
             for file in files {
@@ -116,7 +123,6 @@ fn main() {
                 }
 
                 println!("Copying {}", entry.filename);
-                // Seek to data
                 reader.archive.stream.seek(SeekFrom::Start(entry.disk_offset as u64)).unwrap();
                 reader.archive.read_local_file_header().unwrap();
                 let mut data = vec![0u8; entry.compressed_size as usize];
@@ -129,6 +135,7 @@ fn main() {
 
             if found {
                 fs::rename(&tmp_zip, &zip_file).expect("Failed to replace original zip file");
+                println!("Success.");
             } else {
                 println!("File {} not found in archive", filename);
                 fs::remove_file(&tmp_zip).ok();

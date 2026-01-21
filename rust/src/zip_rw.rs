@@ -54,6 +54,10 @@ impl<S: Read + Write + Seek + 'static> ZipReader<S> {
             let method = match entry.compression_method {
                 0 => "Stored",
                 8 => "Deflate",
+                12 => "BZip2",
+                14 => "LZMA",
+                93 => "Zstd",
+                95 => "XZ",
                 _ => "Unknown",
             };
             let crypt = if (entry.flag & crate::constants::MZ_ZIP_FLAG_ENCRYPTED) != 0 { "*" } else { " " };
@@ -124,6 +128,23 @@ impl<S: Read + Write + Seek + 'static> ZipReader<S> {
                 let mut decoder = DeflateDecoder::new(reader);
                 std::io::copy(&mut decoder, &mut out_data)?;
             }
+            12 => {
+                let mut decoder = bzip2::read::BzDecoder::new(reader);
+                std::io::copy(&mut decoder, &mut out_data)?;
+            }
+            14 => {
+                // LZMA in Zip is complex, usually uses a specific header.
+                // For now use xz2 as a proxy if simple
+                return Err(ZipError::Support);
+            }
+            93 => {
+                let mut decoder = zstd::stream::read::Decoder::new(reader)?;
+                std::io::copy(&mut decoder, &mut out_data)?;
+            }
+            95 => {
+                let mut decoder = xz2::read::XzDecoder::new(reader);
+                std::io::copy(&mut decoder, &mut out_data)?;
+            }
             _ => return Err(ZipError::Support),
         }
 
@@ -191,13 +212,33 @@ impl<S: Read + Write + Seek> ZipWriter<S> {
 
         file.disk_offset = self.archive.stream.seek(SeekFrom::Current(0))? as i64;
 
-        let mut final_data = if self.compress_method == crate::constants::MZ_COMPRESS_METHOD_DEFLATE {
-            let level = if self.compress_level == -1 { Compression::default() } else { Compression::new(self.compress_level as u32) };
-            let mut encoder = DeflateEncoder::new(Vec::new(), level);
-            encoder.write_all(data)?;
-            encoder.finish()?
-        } else {
-            data.to_vec()
+        let mut final_data = match self.compress_method {
+            0 => data.to_vec(),
+            8 => {
+                let level = if self.compress_level == -1 { Compression::default() } else { Compression::new(self.compress_level as u32) };
+                let mut encoder = DeflateEncoder::new(Vec::new(), level);
+                encoder.write_all(data)?;
+                encoder.finish()?
+            },
+            12 => {
+                let level = if self.compress_level == -1 { bzip2::Compression::default() } else { bzip2::Compression::new(self.compress_level as u32) };
+                let mut encoder = bzip2::write::BzEncoder::new(Vec::new(), level);
+                encoder.write_all(data)?;
+                encoder.finish()?
+            },
+            93 => {
+                let level = if self.compress_level == -1 { 3 } else { self.compress_level as i32 };
+                let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), level)?;
+                encoder.write_all(data)?;
+                encoder.finish()?
+            },
+            95 => {
+                let level = if self.compress_level == -1 { 6 } else { self.compress_level as u32 };
+                let mut encoder = xz2::write::XzEncoder::new(Vec::new(), level);
+                encoder.write_all(data)?;
+                encoder.finish()?
+            },
+            _ => return Err(ZipError::Support),
         };
 
         if let Some(pass) = &self.password {
