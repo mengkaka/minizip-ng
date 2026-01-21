@@ -92,7 +92,7 @@ impl<S: Read + Write + Seek> ZipArchive<S> {
             return Err(ZipError::Format);
         }
 
-        self.stream.seek(SeekFrom::Current(6))?; // Skip disk numbers
+        self.stream.seek(SeekFrom::Current(4))?; // Skip disk numbers
         let _entries_on_this_disk = self.stream.read_u16::<LittleEndian>()?;
         let total_entries = self.stream.read_u16::<LittleEndian>()?;
         let _cd_size = self.stream.read_u32::<LittleEndian>()?;
