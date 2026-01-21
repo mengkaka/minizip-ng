@@ -214,18 +214,19 @@ impl<S: Read + Write + Seek> ZipArchive<S> {
 
     fn find_eocd(&mut self) -> ZipResult<u64> {
         let size = self.stream.seek(SeekFrom::End(0))?;
-        let mut read_size = 1024;
-        if read_size > size {
-            read_size = size;
+        // EOCD search can go up to 64KB + 22 bytes
+        let mut search_size = 65536 + 22;
+        if search_size > size {
+            search_size = size;
         }
 
-        let mut buf = vec![0u8; read_size as usize];
-        self.stream.seek(SeekFrom::End(-(read_size as i64)))?;
+        let mut buf = vec![0u8; search_size as usize];
+        self.stream.seek(SeekFrom::End(-(search_size as i64)))?;
         self.stream.read_exact(&mut buf)?;
 
-        for i in (0..=(read_size - 22)).rev() {
+        for i in (0..=(search_size - 22)).rev() {
             if &buf[i as usize..i as usize + 4] == &[0x50, 0x4b, 0x05, 0x06] {
-                return Ok(size - read_size + i);
+                return Ok(size - search_size + i);
             }
         }
 

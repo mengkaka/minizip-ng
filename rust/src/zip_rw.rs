@@ -9,6 +9,7 @@ use crate::crypt::pkcrypt::PkCrypt;
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 use flate2::Compression;
+use crc32fast::Hasher;
 
 pub struct ZipReader<S: Read + Write + Seek> {
     pub archive: ZipArchive<S>,
@@ -97,8 +98,10 @@ impl<S: Read + Write + Seek + 'static> ZipReader<S> {
             let mut encrypted_data = vec![0u8; entry.compressed_size as usize];
             self.archive.stream.read_exact(&mut encrypted_data)?;
 
-            // Decrypt 12 bytes header first (if needed, but our PkCrypt handles it byte by byte)
-            // Actually traditional PKWARE has 12 bytes header.
+            if encrypted_data.len() < 12 {
+                return Err(ZipError::Data);
+            }
+
             let mut decrypted_data = Vec::with_capacity(encrypted_data.len() - 12);
             for i in 0..12 {
                 pkcrypt.decrypt_byte(encrypted_data[i]);
@@ -111,18 +114,27 @@ impl<S: Read + Write + Seek + 'static> ZipReader<S> {
             Box::new((&mut self.archive.stream).take(entry.compressed_size as u64))
         };
 
-        let mut out_file = fs::File::create(&out_path)?;
+        let mut out_data = Vec::new();
 
         match entry.compression_method {
             0 => {
-                std::io::copy(&mut reader, &mut out_file)?;
+                std::io::copy(&mut reader, &mut out_data)?;
             }
             8 => {
                 let mut decoder = DeflateDecoder::new(reader);
-                std::io::copy(&mut decoder, &mut out_file)?;
+                std::io::copy(&mut decoder, &mut out_data)?;
             }
             _ => return Err(ZipError::Support),
         }
+
+        // Verify CRC
+        let mut hasher = Hasher::new();
+        hasher.update(&out_data);
+        if hasher.finalize() != entry.crc {
+            return Err(ZipError::Crc);
+        }
+
+        fs::write(&out_path, out_data)?;
 
         Ok(())
     }
@@ -173,7 +185,7 @@ impl<S: Read + Write + Seek> ZipWriter<S> {
         file.version_madeby = 45; // UNIX
         file.modified_date = Some(chrono::Utc::now());
 
-        let mut hasher = crc32fast::Hasher::new();
+        let mut hasher = Hasher::new();
         hasher.update(data);
         file.crc = hasher.finalize();
 
@@ -218,6 +230,19 @@ impl<S: Read + Write + Seek> ZipWriter<S> {
 
         self.archive.entries.push(file);
 
+        Ok(())
+    }
+
+    pub fn add_raw_entry(&mut self, mut file: ZipFile, data: &[u8]) -> ZipResult<()> {
+        file.disk_offset = self.archive.stream.seek(SeekFrom::Current(0))? as i64;
+        self.archive.write_local_file_header(&file)?;
+        self.archive.stream.write_all(data)?;
+        self.archive.entries.push(file);
+        Ok(())
+    }
+
+    pub fn delete_file(&mut self, filename: &str) -> ZipResult<()> {
+        self.archive.entries.retain(|e| e.filename != filename);
         Ok(())
     }
 
